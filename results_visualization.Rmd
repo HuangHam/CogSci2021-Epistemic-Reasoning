@@ -1,0 +1,281 @@
+---
+title: "Epistemic reasoning paper result visualization"
+author: "Ham Huang"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: united
+    number_sections: true
+    highlight: tango
+  pdf_document: default
+---
+
+```{r setup, include = TRUE}
+# somehow include = TRUE. The default False does not work
+knitr::opts_chunk$set(echo = T, message = F, warning = F, fig.width=12,
+  fig.height=8) # for knitting the script. echo = F to not show code, warning = FALSE to show no warnings
+```
+
+```{r}
+rm(list=ls())
+library(Metrics) # to compute rmse
+library(tidyverse)
+source("src/utils.R") # self-defined useful functions
+```
+
+Import model-simulated data
+```{r}
+relevant_columns = c('order', 'subj', 'outcome', 'cards_iso', 'inference_level', 'agent', 'aic', 'bic','guess_chance','level')
+
+NoisyDEL = read.csv("validation_data/NoisyDEL.csv")%>%mutate(agent = "NoisyDEL")
+SIWEB = read.csv("validation_data/SIWEB.csv")%>%mutate(agent = "SIWEB")
+SUWNB = read.csv("validation_data/SUWNB.csv")%>%mutate(agent = "SUWNB")
+SUWEB = read.csv("validation_data/SUWEB.csv")%>%mutate(agent = "SUWEB")
+
+data_model = bind_rows(NoisyDEL, SIWEB, SUWNB, SUWEB)%>%
+  mutate(guess_chance = (0.5^numRound) * ((should_know!=10)/3 + (should_know==10)), 
+         outcome = recode(outcome, "True"=1, "False"=0))%>% # string to numeric
+         # outcome = as.numeric(outcome))%>% # boolean to numeric (if somehow data column imported as bool)
+  select(sort(relevant_columns))
+```
+
+Import human data and combine with model-simulated data
+```{r}
+relevant_columns = c('order', 'subj', 'outcome', 'cards_iso', 'inference_level', 'agent','guess_chance', 'RT', 'points','exp_time', 'number', 'age', 'gender')
+
+data_human = read.csv("data.csv")%>%
+  mutate(guess_chance = (0.5^numRound) * ((should_know!=10)/3 + (should_know==10)), 
+         agent = "human")%>%
+  mutate_at(c('number','points','exp_time', 'age', 'gender'), as.numeric)%>%
+  select(sort(relevant_columns))
+
+data = bind_rows(data_model, data_human)
+
+dual_axis_scale = 10 # scale RT into score's unit
+avg_to_total = 10 # convert average correct to total correct
+```
+
+# Statistics
+## Accuracy and RT by state
+```{r}
+WinCards = shapeMean(data_human, 'subj','cards_iso')
+avgWinCards = shapeBoth(WinCards,'cards_iso')%>%
+  mutate(cards_iso = fct_reorder(cards_iso, -desc(outcome_m)))  
+(p = addLine(lineplt(
+  avgWinCards, as.factor(cards_iso), avg_to_total*outcome_m, avg_to_total*outcome_se, 'average score', 'black dot: score of a subject', 'state up to equivalence', 'average score'),
+  RT_m,RT_se,'RT',dual_axis_scale,legend_pos = c(0.5, 0.75))+
+    theme(axis.text.x = element_text(size=10, angle=-20, hjust=0, vjust=0))+
+    geom_point(aes(y=avg_to_total*guess_chance_m, colour = "chance"))+
+    geom_jitter(data=WinCards, mapping = aes(x = as.factor(cards_iso), y = avg_to_total*outcome,alpha = 0), width = 0.2, height = 0.3,inherit.aes = F, show.legend = F))
+
+# png("AccByCards.png", units="in", width=5, height=5, res=300)
+# p
+# dev.off()
+```
+
+## Demographic
+```{r}
+df.demo = shapeMean(data_human, 'subj')
+length(unique(data_human$subj))
+summary(df.demo$age)
+table(as.factor(df.demo$gender)) 
+```
+
+## Paragrph 1
+```{r}
+df.stats = shapeMean(data_human, 'subj')
+mean(df.stats$points) # average win game
+mean(df.stats$exp_time) # average time competing experiment
+mean(df.stats$number) # average number typed for the p-beauty contest
+cor.test(df.stats$points, df.stats$number) 
+```
+
+## Paragraph 3
+```{r}
+df.stats = shapeMean(data_human, "subj", "inference_level")%>%
+  mutate(adjustOutcome = outcome-guess_chance, level=inference_level)
+l0 = df.stats%>%filter(level==0)
+l1 = df.stats%>%filter(level==1)
+l2 = df.stats%>%filter(level==2)
+l3 = df.stats%>%filter(level==3)
+l4 = df.stats%>%filter(level==4)
+
+t.test(l1$adjustOutcome, l2$adjustOutcome)
+t.test(l1$adjustOutcome, l3$adjustOutcome)
+t.test(l1$adjustOutcome, l4$adjustOutcome)
+t.test(l2$adjustOutcome, l3$adjustOutcome)
+t.test(l2$adjustOutcome, l4$adjustOutcome)
+t.test(l3$adjustOutcome, l4$adjustOutcome)
+```
+
+# Modeling results
+## Fig 4
+```{r}
+df.plot = shapeBoth(shapeMean(data, 'subj', 'cards_iso', 'order', 'agent')%>%
+                      select(cards_iso,order,agent, outcome)%>%
+                      pivot_wider(names_from = agent, values_from = outcome), 'cards_iso', 'order')%>%
+  filter(cards_iso!='AA8888')%>%
+  pivot_longer(cols = c("SUWEB_m", "SIWEB_m", "SUWNB_m", "NoisyDEL_m"), names_to = "agent", values_to = "outcome_m")%>%
+  ungroup()%>%
+  mutate(order=recode(order, "Amy,Ben,You"="ABP", "Ben,You,Amy"="BPA", "You,Amy,Ben"="PAB"), 
+         agent = recode(agent, SUWNB_m = "SUWNB", NoisyDEL_m = "Noisy DEL", SUWEB_m = "SUWEB", SIWEB_m = "SIWEB"),
+         agent=factor(agent, levels=c("SUWEB", "SIWEB", "SUWNB", "Noisy DEL")))%>%
+  rename(state = cards_iso)
+
+df.R2 = df.plot %>%
+  group_by(agent)%>%
+  summarize(R2 = cor(human_m,outcome_m)^2, 
+            n=n(), 
+            rmse = round(Metrics::rmse(human_m,outcome_m), 2))%>%
+  mutate(human_m = rep(1, 4),
+         outcome_m = 0, p = ifelse(agent=='SUWNB', 2,
+        ifelse(agent=='Noisy DEL', 1,
+        ifelse(agent=='SUWEB', 3,
+        ifelse(agent=='SIWEB', 3,
+                        NA  )))), 
+        R2adj = round(1-(1-R2)*(n-1)/(n-p-1), 2), 
+       )
+  
+(p = ggplot(df.plot,mapping = aes(x=outcome_m,y=human_m,color=state))+
+  geom_abline(intercept = 0,slope = 1, linetype = 2)+
+  geom_smooth(aes(group=1), method="lm",color="black")+
+  geom_errorbar(aes(ymin=human_m-human_se,ymax=human_m+human_se),alpha = 1,width=0,size=1)+
+  geom_point(aes(shape=order),size=2.5)+
+  geom_text(data = df.R2, mapping=aes(x = 0, y = 0.9, label = paste0("R[adj]^2 == ", R2adj)),hjust = 0,  size = 4, parse = T, inherit.aes = F)+
+  geom_text(data = df.R2, mapping=aes(x = 0, y = 0.8, label = paste0("RMSE == ", rmse)),hjust = 0,  size = 4, parse = T, inherit.aes = F)+
+  theme_bw()+
+  labs(y = "Subject accuracy", x="Model prediction")+
+  scale_x_continuous(breaks = seq(0,1,0.25))+
+  scale_y_continuous(breaks = seq(0,1,0.25))+
+  coord_cartesian(xlim=c(0,1),ylim=c(0,1))+
+  theme(text = element_text(size=12),
+        legend.box = "horizontal",
+        legend.position="bottom",
+        legend.justification=c(-0.8,0),
+        legend.text = element_text(size=9),
+        legend.title = element_text(size=11),
+        legend.background = element_blank(),
+        legend.key = element_blank(),
+        panel.grid = element_blank(),
+        panel.border = element_blank(),
+        axis.line = element_line(colour = "black", size = 1),
+        axis.title.x = element_text(margin = margin(0.2,0,0,0,"cm")),
+        axis.title.y = element_text(margin = margin(0,0.1,0,0,"cm"))
+  )+
+  guides(color = guide_legend(order = 1, ncol = 9, title.position = "left", title = 'State'),
+         shape = guide_legend(order = 2, ncol = 3, title.position = "left", title = 'Order'))+
+  facet_wrap(~agent,ncol=4,drop=FALSE))
+
+# ggsave("correlation.png", plot = p, width=12,height=4)
+```
+
+## Fig 5
+### a)
+```{r}
+temp = shapeMean(data%>%
+                   filter(agent!="human")%>%
+                   pivot_longer(cols=ends_with("ic"), names_to = "IC", values_to = "values"), 
+                 "agent", "subj", "IC")%>%
+  group_by(subj)%>%
+  mutate(values = values - values[agent == 'SUWEB'])%>%
+  filter(agent != "SUWEB")%>%
+  mutate(IC = recode(IC, "aic"="AIC", "bic"="BIC"),
+        agent=recode(agent, "NoisyDEL"="Noisy DEL"),
+         agent = factor(agent, levels = c("SUWNB", "SIWEB", "Noisy DEL")))
+ICs = shapeBoth(temp, "agent", "IC")
+
+(IC.plot = ggplot(ICs, aes(x=agent, y=values_m, fill=IC)) + 
+   geom_bar(stat="identity", position=position_dodge()) +
+  geom_errorbar(aes(ymin=values_m-values_se, ymax=values_m+values_se), width=.2,
+                 position=position_dodge(.9))+
+  theme_bw()+
+  labs(title = NULL, x=NULL, y = "Difference in ICs")+
+  theme(text = element_text(size=20),
+        legend.box = "horizontal",
+        legend.position=c(0.25,0.75),
+        legend.text = element_text(size=18),
+        legend.title=element_blank(),
+        legend.background = element_rect(colour = "transparent", fill = "transparent"),
+        legend.key = element_blank(),
+        axis.line = element_line(colour = "black", size = 1),
+        axis.title.x = element_text(margin = margin(0.2,0,0,0,"cm")),
+        axis.title.y = element_text(margin = margin(0,0.1,0,0,"cm"))
+  ))
+
+# ggsave("ICs.png", plot = IC.plot, width=6,height=6)
+```
+### b)
+```{r}
+avgWinInf = shapeBoth(shapeMean(data, 'subj', 'inference_level', 'agent')%>%
+                        mutate(adjustOutcome = outcome-guess_chance),'inference_level', 'agent')%>%
+  mutate(adjustOutcome_se = replace(adjustOutcome_se, agent != "human", 0), 
+         agent=recode(agent, "NoisyDEL"="Noisy DEL", "human"="Human"),
+         agent=factor(agent, c("SUWEB", "SIWEB", "SUWNB", "Noisy DEL", "Human"))) # adjusted outcome is outcome - guess chance
+
+(p = lineplt(avgWinInf, as.factor(inference_level), adjustOutcome_m, adjustOutcome_se, agent, NULL, 'Epistemic level required', 'Adjusted average accuracy')+theme_bw()+
+    theme(text = element_text(size=20),
+        legend.box = "horizontal",
+        legend.position=c(0.75, 0.75),
+        legend.text = element_text(size=18),
+        legend.title = element_text(size=20),
+        legend.background = element_rect(colour = "transparent", fill = "transparent"),
+        legend.key = element_blank(),
+        axis.line = element_line(colour = "black", size = 1),
+        axis.title.x = element_text(margin = margin(0.2,0,0,0,"cm")),
+        axis.title.y = element_text(margin = margin(0,0.1,0,0,"cm")))+scale_y_continuous(breaks = seq(0,1,0.2))+guides(color=guide_legend(title="Agent")))
+
+# png("val_InferLev.png", units="in", width=6,height=6, res=300)
+# p
+# dev.off()
+```
+### c)
+```{r}
+df_param = shapeMean(data%>%
+                       filter(agent %in% c('SUWEB')), 'subj','agent')%>%
+  mutate_at('level',funs(as.numeric(.)))%>%
+  filter(agent == 'SUWEB')
+
+# fit the poisson lambda mle
+lik <- function(lambda){return(-sum(dpois(df_param$level, lambda=lambda, log=TRUE)))}
+nStart = 200; mle = 0; best_nllh = 0; max_level = max(df_param$level)
+for (n in 1:nStart){
+  fit = optim(max_level*runif(n=1, min=0, max=1), lik)
+  if (fit$value > best_nllh){
+    mle = fit$par; best_nllh = fit$value
+  }
+}
+
+# plot
+poi = c(0); nsim = 100000; name = replicate(nsim, paste0("Poisson(", "\U03BB", "=", mle%>%round(2), ")"))
+poi = pmin(max_level, rpois(nsim, mle))
+
+df_param = tibble(value = c(df_param$level, poi), variable = c(replicate(length(df_param$level), "SUWEB epistemic level"), name))
+
+(p=ggplot(data = df_param) +
+  geom_histogram(aes(x = value, y=c(..count..[..group..==1]/sum(..count..[..group..==1]),
+                         ..count..[..group..==2]/sum(..count..[..group..==2])), fill=variable), 
+                 alpha=0.3, binwidth=0.5, position=position_dodge(width=0.7))+
+  theme_bw()+
+  labs(title = NULL, y = 'Frequency', x=NULL)+
+  theme(text = element_text(size=20),
+        legend.box = "horizontal",
+        legend.position = c(0.75, 0.75),
+        legend.text = element_text(size=18),
+        legend.title=element_blank(),
+        legend.background = element_rect(colour = "transparent", fill = "transparent"),
+        legend.key = element_blank(),
+        axis.line = element_line(colour = "black", size = 1),
+        axis.title.x = element_text(margin = margin(0.2,0,0,0,"cm")),
+        axis.title.y = element_text(margin = margin(0,0.1,0,0,"cm"))
+  ))
+  
+print(paste('level and capped poisson: nsim=',toString(nsim),', mle=',toString(mle)))
+
+# png("level_poi.png", units="in", width=12, height=6, res=300)
+# p
+# dev.off()
+```
+
+
